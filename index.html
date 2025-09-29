@@ -197,7 +197,7 @@
             if (kmlLayer) { map.removeLayer(kmlLayer); kmlLayer = null; }
             if (kmlRoutePolyline) { map.removeLayer(kmlRoutePolyline); kmlRoutePolyline = null; }
             
-            // Eğer yeni bir KML yükleniyorsa, önceki mavi rotayı temizle
+            // YENİ DÜZELTME 1: Yeni KML yükleniyorsa, önceki mavi rotayı temizle
             if (currentRoutePolyline) {
                  currentRoutePolyline.setLatLngs([]);
             }
@@ -386,14 +386,15 @@
                  return;
             }
             
-            // Rotadaki en yakın noktayı bul (kullanıcı nerede olursa olsun)
+            // Rotadaki en yakın noktayı bul
             let minDistance = Infinity;
             let closestIndex = -1;
             
-            // Sadece mevcut index'ten rota sonuna kadar olan kısmı kontrol et (performans ve rota takibi için)
-            let startIndex = isTracking ? Math.max(0, nearestPointIndex - 50) : 0; // Eğer takip aktifse 50 nokta geriden başla
+            // Takip aktifse, performans için sadece yakın çevreyi kontrol et, aksi halde tüm rotayı
+            let startIndex = isTracking ? Math.max(0, nearestPointIndex - 50) : 0; 
+            let endIndex = isTracking ? Math.min(KML_ROUTE_COORDS.length, nearestPointIndex + 50) : KML_ROUTE_COORDS.length;
 
-            for (let i = startIndex; i < KML_ROUTE_COORDS.length; i++) {
+            for (let i = startIndex; i < endIndex; i++) {
                 const p = KML_ROUTE_COORDS[i];
                 const distance = haversineDistance(lat, lng, p[0], p[1]);
                 if (distance < minDistance) {
@@ -428,13 +429,15 @@
 
             // Başlangıç/Devam Noktası Kontrolü (isTracking == false)
             if (!isTracking) {
-                document.getElementById('status-text').textContent = 'Devam Etme Bekleniyor';
+                document.getElementById('status-text').textContent = 'Bekleniyor';
                 
                 if (minDistance <= ACCEPTANCE_RADIUS_METERS) {
                     // Kullanıcı rotanın kabul edilebilir başlangıç/devam noktasında
                     nearestPointIndex = closestIndex; 
 
-                    const buttonText = nearestPointIndex === 0 ? 'Rotayı Başlat' : 'Devam Et';
+                    // YENİ DÜZELTME 2: Buton metni mantığı (Başlangıç noktasına yakınsa 'Rotayı Başlat')
+                    const isNearStart = nearestPointIndex <= 2; // İlk 3 noktayı başlangıç say
+                    const buttonText = isNearStart ? 'Rotayı Başlat' : 'Devam Et';
                     const guidanceText = `${buttonText}mek için butona basın. Rotaya ${Math.round(minDistance)}m uzaktasınız.`;
                     
                     document.getElementById('start-button').textContent = buttonText;
@@ -598,7 +601,12 @@
             isTracking = false;
             isDrawingTrack = false; 
 
-            document.getElementById('start-button').textContent = allowRestart ? 'Devam Et' : 'Tamamlandı';
+            // Buton metnini uygun şekilde ayarla
+            const buttonText = allowRestart ? 
+                (nearestPointIndex <= 2 ? 'Rotayı Başlat' : 'Devam Et') : 
+                'Tamamlandı';
+
+            document.getElementById('start-button').textContent = buttonText;
             
             if (allowRestart) {
                  document.getElementById('start-button').disabled = false;
@@ -640,14 +648,13 @@
                 
                 // Eğer kullanıcı rotaya kabul edilebilir mesafedeyse, o noktadan devam et
                 if (minDistance <= ACCEPTANCE_RADIUS_METERS) {
-                    // *** ÖNEMLİ DÜZELTME: Daha önce burada var olan rota temizleme kodu kaldırıldı.
                     
                     // Devam noktası olarak en yakın noktayı ayarla
                     nearestPointIndex = closestIndex;
                     
-                    // Mavi rota çizimine BAŞLA
+                    // Mavi rota çizimine BAŞLA (Önceki izler korunur)
                     isDrawingTrack = true;
-                    // Mevcut konumu rota izine ekleyerek devam et (eski rota korunur)
+                    // Mevcut konumu rota izine ekleyerek devam et
                     currentRoutePolyline.addLatLng(userMarker.getLatLng());
                     
                     // Takibi Aktif Et
@@ -661,7 +668,7 @@
                     document.getElementById('start-button').classList.add('bg-red-600');
                     document.getElementById('status-text').textContent = 'Rota Takibi Aktif';
                     
-                    const startMessage = nearestPointIndex === 0 
+                    const startMessage = nearestPointIndex <= 2 
                         ? "Rota takibi başlatıldı. Lütfen siyah çizgiyi takip edin."
                         : "Rotaya devam ediliyor. Lütfen siyah çizgiyi takip edin.";
                     
