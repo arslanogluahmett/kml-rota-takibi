@@ -196,6 +196,11 @@
             turnMarkers = []; 
             if (kmlLayer) { map.removeLayer(kmlLayer); kmlLayer = null; }
             if (kmlRoutePolyline) { map.removeLayer(kmlRoutePolyline); kmlRoutePolyline = null; }
+            
+            // Eğer yeni bir KML yükleniyorsa, önceki mavi rotayı temizle
+            if (currentRoutePolyline) {
+                 currentRoutePolyline.setLatLngs([]);
+            }
 
             if (!file) {
                 kmlStatus.textContent = "KML Dosyası Yüklenemedi.";
@@ -635,14 +640,14 @@
                 
                 // Eğer kullanıcı rotaya kabul edilebilir mesafedeyse, o noktadan devam et
                 if (minDistance <= ACCEPTANCE_RADIUS_METERS) {
-                    // Mavi rota izi silinmiyor (setLatLngs çağrısı kaldırıldı)
+                    // *** ÖNEMLİ DÜZELTME: Daha önce burada var olan rota temizleme kodu kaldırıldı.
                     
                     // Devam noktası olarak en yakın noktayı ayarla
                     nearestPointIndex = closestIndex;
                     
                     // Mavi rota çizimine BAŞLA
                     isDrawingTrack = true;
-                    // Mevcut konumu rota izine ekleyerek devam et
+                    // Mevcut konumu rota izine ekleyerek devam et (eski rota korunur)
                     currentRoutePolyline.addLatLng(userMarker.getLatLng());
                     
                     // Takibi Aktif Et
