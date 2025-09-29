@@ -96,7 +96,7 @@
         </div>
 
         <div id="message-container" class="mt-4 p-3 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded-lg hidden">
-            <p><strong>UYARI:</strong> Bu uygulama bir simülasyondur. Gerçek bir navigasyon uygulaması değildir. Rota takibi sadece tarayıcınızın GPS verileri üzerinden çalışır.</p>
+            <p><strong>UYARI:</strong> Bu uygulama bir simülasyondu. Gerçek bir navigasyon uygulaması değildir. Rota takibi sadece tarayıcınızın GPS verileri üzerinden çalışır.</p>
         </div>
     </div>
 
@@ -635,14 +635,14 @@
                 
                 // Eğer kullanıcı rotaya kabul edilebilir mesafedeyse, o noktadan devam et
                 if (minDistance <= ACCEPTANCE_RADIUS_METERS) {
-                    // Mavi rota izini SİLME (Önceki rota izi korunur)
+                    // Mavi rota izi silinmiyor (setLatLngs çağrısı kaldırıldı)
                     
                     // Devam noktası olarak en yakın noktayı ayarla
                     nearestPointIndex = closestIndex;
                     
                     // Mavi rota çizimine BAŞLA
                     isDrawingTrack = true;
-                    // Mevcut konumu ilk nokta olarak ekle
+                    // Mevcut konumu rota izine ekleyerek devam et
                     currentRoutePolyline.addLatLng(userMarker.getLatLng());
                     
                     // Takibi Aktif Et
