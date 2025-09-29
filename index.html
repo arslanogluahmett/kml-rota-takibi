@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gelişmiş KML Rota Navigasyon Sistemi V3</title>
+    <title>Gelişmiş KML Rota Navigasyon Sistemi V4</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Inter Font (Tailwind varsayılanı) -->
@@ -140,6 +140,7 @@
         const OFF_ROUTE_DISTANCE_METERS = 25; // Rotadan sapma için eşik
         const START_PROMPT_INTERVAL_MS = 30000; 
         const NAVIGATION_PROMPT_INTERVAL_MS = 5000; 
+        const AVERAGE_SPEED_KMH = 5; // Ortalama hız (Yürüyüş/Bisiklet için 5 km/s alındı)
         
         let lastStartPromptTime = 0; 
         let lastNavigationPromptTime = 0; 
@@ -160,6 +161,48 @@
             const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
             return R * c;
+        }
+
+        /**
+         * Rotanın kalan mesafesini hesaplar (kilometre cinsinden).
+         * @param {number} startIndex Başlangıç noktası indeksi.
+         * @returns {number} Kalan mesafe (km).
+         */
+        function calculateRemainingDistance(startIndex) {
+            let totalDistanceMeters = 0;
+            
+            // Geçerli noktadan son noktaya kadar olan mesafeleri topla
+            for (let i = startIndex; i < KML_ROUTE_COORDS.length - 1; i++) {
+                const p1 = KML_ROUTE_COORDS[i];
+                const p2 = KML_ROUTE_COORDS[i + 1];
+                totalDistanceMeters += haversineDistance(p1[0], p1[1], p2[0], p2[1]);
+            }
+            
+            return totalDistanceMeters / 1000; // Kilometreye çevir
+        }
+
+        /**
+         * Kilometre cinsinden mesafeyi alıp Tahmini Süre hesaplar.
+         * @param {number} distanceKm Kalan mesafe (km).
+         * @returns {string} Tahmini süre metni (ör: "25 dakika").
+         */
+        function calculateEstimatedTime(distanceKm) {
+            if (distanceKm <= 0.05) return "çok az kaldı"; 
+            
+            // Süre = Mesafe (km) / Hız (km/s)
+            const timeHours = distanceKm / AVERAGE_SPEED_KMH;
+            
+            // Saati dakikaya çevir
+            const timeMinutes = Math.round(timeHours * 60);
+            
+            if (timeMinutes < 1) return "1 dakikadan az";
+            if (timeMinutes < 60) return `${timeMinutes} dakika`;
+            
+            const hours = Math.floor(timeMinutes / 60);
+            const minutes = timeMinutes % 60;
+            
+            if (minutes === 0) return `${hours} saat`;
+            return `${hours} saat ${minutes} dakika`;
         }
 
         /**
@@ -338,7 +381,7 @@
                     
                     map.fitBounds(kmlRoutePolyline.getBounds()); 
                     
-                    kmlStatus.textContent = `KML Başarıyla Yüklendi! ${KML_ROUTE_COORPS.length} nokta içeriyor.`;
+                    kmlStatus.textContent = `KML Başarıyla Yüklendi! Toplam Rota Uzunluğu: ${calculateRemainingDistance(0).toFixed(2)} km.`;
                     kmlStatus.classList.remove('text-red-500');
                     kmlStatus.classList.add('text-green-500');
                     document.getElementById('guidance-text').textContent = 'Rotaya başlamak için yeşil noktaya yaklaşın.';
@@ -461,6 +504,11 @@
             
             const { distance: minDistance, closestIndex } = getClosestDistanceToRoute(lat, lng);
             
+            // --- Yeni Mesafe ve Süre Hesaplaması ---
+            const remainingDistanceKm = calculateRemainingDistance(closestIndex);
+            const estimatedTimeText = calculateEstimatedTime(remainingDistanceKm);
+
+
             // Rota sonu kontrolü
             if (isTracking && nearestPointIndex >= KML_ROUTE_COORDS.length - 1 && minDistance < RESUME_RADIUS_METERS) {
                 const finishText = 'Rotayı başarıyla tamamladınız! Harika sürüş.';
@@ -555,7 +603,7 @@
                  nearestPointIndex = closestIndex; 
             }
 
-            let guidanceMessage = `Rotayı takip ediyorsunuz. Rota sonuna yaklaşık ${KML_ROUTE_COORDS.length - 1 - nearestPointIndex} nokta kaldı.`;
+            let guidanceMessage = `Rotayı takip ediyorsunuz. Tamamlanmasına yaklaşık ${remainingDistanceKm.toFixed(2)} km kaldı. (Tahmini süre: ${estimatedTimeText})`;
             
             // Rotadan Uzaklaşma Kontrolü (25m)
             if (minDistance > OFF_ROUTE_DISTANCE_METERS) {
@@ -577,6 +625,9 @@
                 if(isDrawingTrack) {
                     currentRoutePolyline.addLatLng(userMarker.getLatLng());
                 }
+                
+                // Geri dönülmüşse ve tracking aktifse yeni guidance mesajını tekrar ayarla
+                guidanceMessage = `Rotayı takip ediyorsunuz. Tamamlanmasına yaklaşık ${remainingDistanceKm.toFixed(2)} km kaldı. (Tahmini süre: ${estimatedTimeText})`;
             }
 
 
@@ -731,6 +782,13 @@
                     if (isDevam) {
                          if (stopLocationMarker) { map.removeLayer(stopLocationMarker); stopLocationMarker = null; }
                          lastValidStopLocation = null;
+                         
+                         // Devam ederken en yakın rotadan noktayı bul ve nearestPointIndex'i güncelle.
+                         const { closestIndex } = getClosestDistanceToRoute(userLatlng.lat, userLatlng.lng);
+                         if (closestIndex !== -1) {
+                             nearestPointIndex = closestIndex;
+                         }
+                         
                     } else {
                          // Başlangıç modunda, en yakın indexi başlangıç noktası olarak ayarla
                          nearestPointIndex = 0;
