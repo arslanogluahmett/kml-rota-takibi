@@ -19,26 +19,22 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
     
-    <!-- Leaflet KML Eklentisi (KML verilerini okumak için - Dışarıdan okuma gerekliliği için tutuldu) -->
+    <!-- Leaflet KML Eklentisi -->
     <script src="https://unpkg.com/leaflet-kml@1.0.0/dist/leaflet-kml.min.js"></script>
     
     <!-- Firebase SDK (Zorunlu depolama gereksinimi için) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        // Firestore için log seviyesini ayarla
         setLogLevel('debug');
 
         const initializeFirebase = async () => {
-            // NOTE: Bu kod, yalnızca yerel geliştirme ortamında çalıştırılıyorsa, 
-            // Canvas'a özgü global değişkenler tanımsız olacaktır.
             const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
             const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
 
-            // Eğer Firebase konfigürasyonu yoksa, bu kısım atlanır ancak uygulamanın geri kalanı çalışır.
             if (Object.keys(firebaseConfig).length === 0) {
                  console.warn("Firebase konfigürasyonu bulunamadı. Sadece harita ve KML işlevi çalışacak.");
                  document.dispatchEvent(new Event('firebaseReady'));
@@ -50,7 +46,6 @@
                 window.db = getFirestore(app);
                 window.auth = getAuth(app);
                 
-                // Kimlik doğrulama
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(window.auth, __initial_auth_token);
                 } else {
@@ -59,8 +54,6 @@
 
                 window.userId = window.auth.currentUser?.uid || crypto.randomUUID();
                 console.log("Firebase ve Auth başarıyla başlatıldı. User ID:", window.userId);
-
-                // Ana harita ve navigasyon mantığını başlat
                 document.dispatchEvent(new Event('firebaseReady'));
             } catch (error) {
                 console.error("Firebase başlatılırken veya oturum açılırken hata oluştu:", error);
@@ -104,39 +97,35 @@
         </div>
 
         <div id="message-container" class="mt-4 p-3 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded-lg hidden">
-            <p><strong>UYARI:</strong> Bu uygulama bir simülasyonduR. Gerçek bir Android navigasyon uygulaması değildir. Rota takibi sadece tarayıcınızın GPS verileri üzerinden çalışır.</p>
+            <p><strong>UYARI:</strong> Bu uygulama bir simülasyondur. Gerçek bir navigasyon uygulaması değildir. Rota takibi sadece tarayıcınızın GPS verileri üzerinden çalışır.</p>
         </div>
     </div>
 
     <script>
         // Global değişkenler
         let map;
-        let auth;
         let KML_ROUTE_COORDS = []; // Siyah rota koordinatları
         let currentRoutePolyline; // Mavi rota (sürücünün izi)
         let kmlRoutePolyline; // Siyah rota (KML)
-        let isTracking = false;
+        let isTracking = false; // Navigasyon modunda (rotayı takip ediyor)
         let userMarker;
-        let watchId = null; // Geolocation watch ID
-        let nearestPointIndex = 0;
-        let kmlLayer = null; // KML katmanını tutmak için
-        const START_RADIUS_METERS = 50; // Başlangıç noktasına olan kabul edilebilir mesafe (metre)
-        let lastStartPromptTime = 0; // Son başlangıç uyarısının zaman damgası (yeni)
-        const START_PROMPT_INTERVAL_MS = 30000; // 30 saniye (yeni)
+        let watchId = null; 
+        let nearestPointIndex = 0; // Rotada en son ulaşılan nokta
+        let kmlLayer = null;
+        const ACCEPTANCE_RADIUS_METERS = 50; // Başlangıç/devam noktasına veya rotaya kabul edilebilir mesafe
+        const START_PROMPT_INTERVAL_MS = 30000; // Başlangıç uyarısı 30 saniye
+        const NAVIGATION_PROMPT_INTERVAL_MS = 5000; // Navigasyon uyarıları 5 saniye
         
-        // Kritik dönüşleri işaretlemek için bir dizi (yeni)
-        let turnMarkers = []; 
+        let lastStartPromptTime = 0; // Son başlangıç uyarısının zaman damgası
+        let lastNavigationPromptTime = 0; // Son navigasyon uyarısının zaman damgası (Yeni)
+        let turnMarkers = []; // Kritik dönüşler
+        let isDrawingTrack = false; // Mavi rota çizimini kontrol eder (Yeni)
 
         /**
          * İki koordinat arasındaki mesafeyi hesaplar (metre cinsinden - Harversine)
-         * @param {number} lat1 
-         * @param {number} lon1 
-         * @param {number} lat2 
-         * @param {number} lon2 
-         * @returns {number} Mesafe (metre)
          */
         function haversineDistance(lat1, lon1, lat2, lon2) {
-            const R = 6371e3; // Dünya'nın yarıçapı (metre)
+            const R = 6371e3; 
             const phi1 = lat1 * Math.PI / 180;
             const phi2 = lat2 * Math.PI / 180;
             const deltaPhi = (lat2 - lat1) * Math.PI / 180;
@@ -151,13 +140,7 @@
         }
 
         /**
-         * İki ardışık rota segmenti arasındaki dönüş açısını hesaplar (yeni)
-         * - P1->P2 segmentinden P2->P3 segmentine dönerken yönü hesaplar.
-         * - P1: Önceki nokta, P2: Dönüş noktası, P3: Sonraki nokta
-         * @param {Array<number>} p1 [lat, lng]
-         * @param {Array<number>} p2 [lat, lng]
-         * @param {Array<number>} p3 [lat, lng]
-         * @returns {number} Dönüş açısı (derece, -180'den 180'e). Pozitif: Sağa, Negatif: Sola
+         * İki ardışık rota segmenti arasındaki dönüş açısını hesaplar
          */
         function calculateTurnAngle(p1, p2, p3) {
             function bearing(latA, lonA, latB, lonB) {
@@ -170,7 +153,7 @@
                           Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
                 
                 let brng = Math.atan2(y, x) * 180 / Math.PI;
-                return (brng + 360) % 360; // 0-360 derece
+                return (brng + 360) % 360; 
             }
 
             const bearing1 = bearing(p1[0], p1[1], p2[0], p2[1]);
@@ -186,12 +169,11 @@
         // Metin okuma (TTS) fonksiyonu
         function speak(text) {
             if ('speechSynthesis' in window) {
-                // Önceki konuşmaları iptal et
                 if (speechSynthesis.speaking) {
                     speechSynthesis.cancel();
                 }
                 const utterance = new SpeechSynthesisUtterance(text);
-                utterance.lang = 'tr-TR'; // Türkçe dil ayarı
+                utterance.lang = 'tr-TR'; 
                 speechSynthesis.speak(utterance);
             } else {
                 console.warn("Tarayıcınız sesli okumayı desteklemiyor.");
@@ -199,16 +181,14 @@
         }
         
         /**
-         * KML dosyasını okur ve hem LineString hem de ardışık Point verilerini rotaya dönüştürür.
-         * Ayrıca kritik dönüş noktalarını hesaplar ve işaretler (yeni).
-         * @param {Event} event File input change event.
+         * KML dosyasını okur ve LineString verilerini rotaya dönüştürür.
          */
         function handleKmlUpload(event) {
             const file = event.target.files[0];
             const kmlStatus = document.getElementById('kml-status');
-            KML_ROUTE_COORDS = []; // Önceki rotayı temizle
-            turnMarkers.forEach(m => map.removeLayer(m));
-            turnMarkers = []; // Kritik dönüşleri temizle (yeni)
+            KML_ROUTE_COORDS = []; 
+            turnMarkers.forEach(m => map.removeLayer(m.marker));
+            turnMarkers = []; 
 
             if (!file) {
                 kmlStatus.textContent = "KML Dosyası Yüklenemedi.";
@@ -219,21 +199,13 @@
             reader.onload = function(e) {
                 const kmlText = e.target.result;
                 
-                // Haritadaki eski KML katmanlarını temizle
-                if (kmlLayer) {
-                    map.removeLayer(kmlLayer);
-                    kmlLayer = null;
-                }
-                if (kmlRoutePolyline) {
-                    map.removeLayer(kmlRoutePolyline);
-                    kmlRoutePolyline = null;
-                }
+                if (kmlLayer) { map.removeLayer(kmlLayer); kmlLayer = null; }
+                if (kmlRoutePolyline) { map.removeLayer(kmlRoutePolyline); kmlRoutePolyline = null; }
                 
                 try {
                     const parser = new DOMParser();
                     const kmlDom = parser.parseFromString(kmlText, 'text/xml');
                     
-                    // KML ayrıştırma mantığı (LineString ve Point toplama) önceki gibi kalır.
                     kmlDom.querySelectorAll('LineString, linestring').forEach(ls => {
                         const coordsText = ls.querySelector('coordinates')?.textContent.trim();
                         if (coordsText) {
@@ -252,6 +224,7 @@
                     });
 
                     if (KML_ROUTE_COORDS.length === 0) {
+                         // Eğer LineString yoksa, Point'leri dene (KML Point serisi)
                          kmlDom.querySelectorAll('Placemark').forEach(pm => {
                             const point = pm.querySelector('Point, point');
                             if (point) {
@@ -281,7 +254,7 @@
                         return;
                     }
                     
-                    // Yeni: Kritik dönüş noktalarını bul ve işaretle
+                    // Kritik dönüş noktalarını bul ve işaretle
                     findAndMarkTurns(); 
 
                     // Haritayı temizle ve rotayı çiz
@@ -299,9 +272,9 @@
                     L.marker(startPoint, { 
                         icon: L.divIcon({ className: 'start-marker', html: '<div style="background-color:green; width:20px; height:20px; border-radius:50%; border: 3px solid white; box-shadow: 0 0 5px rgba(0,0,0,0.5);"></div>', iconSize: [20, 20] })
                     }).addTo(map)
-                        .bindPopup("<b>Rota Başlangıç Noktası</b>").openPopup();
+                        .bindPopup("<b>Rota Başlangıç Noktası</b>");
                     
-                    map.fitBounds(kmlRoutePolyline.getBounds()); // Rotaya odaklan
+                    map.fitBounds(kmlRoutePolyline.getBounds()); 
                     
                     kmlStatus.textContent = `KML Başarıyla Yüklendi! ${KML_ROUTE_COORDS.length} nokta içeriyor.`;
                     kmlStatus.classList.remove('text-red-500');
@@ -311,34 +284,33 @@
                     
                 } catch (error) {
                     console.error("KML ayrıştırma hatası:", error);
-                    kmlStatus.textContent = "HATA: KML dosya formatı okunamadı. (Ayrıştırma Hatası) - Yerel Sunucu kullandığınızdan emin olun.";
+                    kmlStatus.textContent = "HATA: KML dosya formatı okunamadı. (Ayrıştırma Hatası)";
                     kmlStatus.classList.remove('text-green-500');
                     kmlStatus.classList.add('text-red-500');
                     document.getElementById('start-button').disabled = true;
                 }
             };
             
-            reader.readAsText(file); // Dosyayı metin olarak oku
+            reader.readAsText(file); 
         }
 
         /**
-         * Rota noktalarını tarayarak belirgin dönüş noktalarını bulur ve işaretler (yeni).
-         * Gelişmiş navigasyon için kullanılır.
+         * Rota noktalarını tarayarak belirgin dönüş noktalarını bulur ve işaretler.
          */
         function findAndMarkTurns() {
-             turnMarkers.forEach(m => map.removeLayer(m));
+             // Eski dönüş işaretlerini kaldır
+             turnMarkers.forEach(m => map.removeLayer(m.marker));
              turnMarkers = [];
              
-             const ANGLE_THRESHOLD = 20; // 20 dereceden fazla dönüşler kritik sayılır.
-             const MIN_DISTANCE_METERS = 30; // 30 metreden daha yakın dönüşler gruplanır.
+             const ANGLE_THRESHOLD = 20; // Kritik dönüş açısı (derece)
+             const MIN_DISTANCE_METERS = 30; // Dönüş noktaları arası minimum mesafe
              
-             // En az 3 nokta (P1, P2, P3) olması gerekir.
              if (KML_ROUTE_COORDS.length < 3) return;
 
              for (let i = 1; i < KML_ROUTE_COORDS.length - 1; i++) {
-                const p1 = KML_ROUTE_COORDS[i - 1]; // Önceki nokta
-                const p2 = KML_ROUTE_COORDS[i];     // Dönüş noktası
-                const p3 = KML_ROUTE_COORDS[i + 1]; // Sonraki nokta
+                const p1 = KML_ROUTE_COORDS[i - 1]; 
+                const p2 = KML_ROUTE_COORDS[i];     
+                const p3 = KML_ROUTE_COORDS[i + 1]; 
 
                 const angle = calculateTurnAngle(p1, p2, p3);
 
@@ -346,16 +318,14 @@
                     let turnDirection = angle > 0 ? "Sağ" : "Sol";
                     let turnDegree = Math.round(Math.abs(angle));
                     
-                    // Dönüş açısı küçükse ve çok yakınsa atla (gürültüyü engelle)
                     if (turnDegree < 25 && haversineDistance(p1[0], p1[1], p2[0], p2[1]) < MIN_DISTANCE_METERS) {
                         continue;
                     }
                     
-                    // Dönüş Marker'ı oluştur ve listeye ekle
                     const marker = L.marker(p2, {
                         icon: L.divIcon({
                             className: 'turn-marker',
-                            html: `<div class="bg-yellow-500 text-white p-1 text-xs font-bold rounded-full shadow-lg transform rotate-${angle > 0 ? '45' : '-45'}">
+                            html: `<div class="bg-yellow-500 text-white p-1 text-xs font-bold rounded-full shadow-lg transform ${angle > 0 ? 'rotate-45' : 'rotate-315'}">
                                 ${turnDirection.toUpperCase()}
                             </div>`,
                             iconSize: [40, 40],
@@ -378,11 +348,7 @@
         // Haritayı başlatma
         function setupMap() {
             if (map) map.remove();
-
-            // KML yüklenene kadar varsayılan bir merkeze ayarla
             map = L.map('map').setView([41.015137, 28.979530], 13); // İstanbul
-
-            // OpenStreetMap katmanı ekle
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 maxZoom: 19,
                 attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
@@ -395,16 +361,15 @@
                 opacity: 0.9
             }).addTo(map);
 
-            // Harita başlatıldığında KML yüklenmediği için start butonu devre dışı kalmalı
             document.getElementById('start-button').disabled = true;
         }
 
         // Navigasyon ve Takip Mantığı
-        function guidanceLogic(lat, lng) {
+        function guidanceLogic(lat, lng, heading) {
             const userLatLng = [lat, lng];
-
-            // 1. Kullanıcı İzini Güncelle
-            currentRoutePolyline.addLatLng(userLatLng);
+            const currentTime = Date.now();
+            
+            // Marker Güncelleme
             if (userMarker) {
                 userMarker.setLatLng(userLatLng);
             } else {
@@ -416,57 +381,23 @@
                     })
                 }).addTo(map);
             }
-            map.panTo(userLatLng); // Haritayı kullanıcının merkezine taşı
+            map.panTo(userLatLng);
 
-            // KML Yüklenmemişse burada dur
+            // Mavi rota çizimi (Sadece tracking aktif ve butona basılmışsa)
+            if (isTracking && isDrawingTrack) {
+                currentRoutePolyline.addLatLng(userLatLng);
+            }
+
             if (KML_ROUTE_COORDS.length === 0) {
                  document.getElementById('guidance-text').textContent = 'Lütfen KML dosyası yükleyin. Konumunuz takip ediliyor.';
                  return;
             }
             
-            // Başlangıç noktası
-            const startPoint = KML_ROUTE_COORDS[0];
-            const distanceToStart = haversineDistance(lat, lng, startPoint[0], startPoint[1]);
-            
-            // 2. Takip Başlamadıysa (Başlangıç Noktasına Yönlendirme)
-            if (!isTracking) {
-                document.getElementById('status-text').textContent = 'Başlangıç Bekleniyor';
-                let guidanceText;
-                const currentTime = Date.now();
-
-                if (distanceToStart <= START_RADIUS_METERS) {
-                    guidanceText = 'Başlangıç noktasındasınız! Lütfen "Rotayı Başlat" butonuna basın.';
-                    document.getElementById('start-button').textContent = 'Rotayı Başlat';
-                    document.getElementById('start-button').disabled = false;
-                    document.getElementById('start-button').classList.remove('bg-blue-600', 'bg-red-600');
-                    document.getElementById('start-button').classList.add('bg-green-600');
-                    if (!speechSynthesis.speaking) speak(guidanceText); // Sadece bir kere söyle
-                } else {
-                    guidanceText = `Başlangıç noktasına ${Math.round(distanceToStart)} metre uzaktasınız. Lütfen o yöne ilerleyin.`;
-                    document.getElementById('start-button').textContent = 'Başlangıca Yaklaşın';
-                    document.getElementById('start-button').disabled = true;
-                    document.getElementById('start-button').classList.remove('bg-green-600', 'bg-red-600');
-                    document.getElementById('start-button').classList.add('bg-blue-600');
-                    
-                    // Yeni: Sadece 30 saniyede bir uyarı ver
-                    if (currentTime - lastStartPromptTime > START_PROMPT_INTERVAL_MS && !speechSynthesis.speaking) {
-                        speak("Başlangıç noktasına gidiniz.");
-                        lastStartPromptTime = currentTime;
-                    }
-                }
-                document.getElementById('guidance-text').textContent = guidanceText;
-                return;
-            }
-
-            // 3. Takip Başladıysa (Rota Takip Yönlendirmesi)
-            document.getElementById('status-text').textContent = 'Rota Takibi Aktif';
-
-            // En yakın rota noktasını bul ve ilerleme durumunu kontrol et
+            // Rotadaki en yakın noktayı bul (kullanıcı nerede olursa olsun)
             let minDistance = Infinity;
             let closestIndex = -1;
 
-            // En yakın nokta aramasını sadece mevcut ilerleme noktasından rota sonuna kadar yap
-            for (let i = nearestPointIndex; i < KML_ROUTE_COORDS.length; i++) {
+            for (let i = 0; i < KML_ROUTE_COORDS.length; i++) {
                 const p = KML_ROUTE_COORDS[i];
                 const distance = haversineDistance(lat, lng, p[0], p[1]);
                 if (distance < minDistance) {
@@ -474,31 +405,80 @@
                     closestIndex = i;
                 }
             }
+            
+            // Başlangıç/Devam Noktası Kontrolü
+            if (!isTracking) {
+                document.getElementById('status-text').textContent = 'Başlangıç/Devam Bekleniyor';
+                
+                if (minDistance <= ACCEPTANCE_RADIUS_METERS) {
+                    // Kullanıcı rotanın kabul edilebilir başlangıç/devam noktasında
+                    const buttonText = nearestPointIndex === 0 ? 'Rotayı Başlat' : 'Rotaya Devam Et';
+                    const guidanceText = `${buttonText}mek için butona basın. Rotadan ${Math.round(minDistance)}m uzaktasınız.`;
+                    
+                    document.getElementById('start-button').textContent = buttonText;
+                    document.getElementById('start-button').disabled = false;
+                    document.getElementById('start-button').classList.remove('bg-blue-600', 'bg-red-600');
+                    document.getElementById('start-button').classList.add('bg-green-600');
+                    document.getElementById('guidance-text').textContent = guidanceText;
+                    
+                    if (currentTime - lastStartPromptTime > START_PROMPT_INTERVAL_MS && !speechSynthesis.speaking) {
+                        speak(`Lütfen ${buttonText} butonuna basınız.`);
+                        lastStartPromptTime = currentTime;
+                    }
+                } else {
+                    // Kullanıcı rotadan uzakta, rotaya yönlendir
+                    let guidanceText = `Rotaya ${Math.round(minDistance)} metre uzaktasınız. Lütfen rotaya gidiniz.`;
+                    document.getElementById('start-button').textContent = 'Rotaya Yaklaşın';
+                    document.getElementById('start-button').disabled = true;
+                    document.getElementById('start-button').classList.remove('bg-green-600', 'bg-red-600');
+                    document.getElementById('start-button').classList.add('bg-blue-600');
+                    document.getElementById('guidance-text').textContent = guidanceText;
+                    
+                    if (currentTime - lastStartPromptTime > START_PROMPT_INTERVAL_MS && !speechSynthesis.speaking) {
+                        speak("Rotaya gidiniz.");
+                        lastStartPromptTime = currentTime;
+                    }
+                }
+                return;
+            }
+            
+            // Rota Takibi Aktif
+            document.getElementById('status-text').textContent = 'Rota Takibi Aktif';
 
-            // İlerlemeyi kaydet
-            if (minDistance < 10 && closestIndex > nearestPointIndex) {
-                 nearestPointIndex = closestIndex;
+            // Rotadaki ilerleme durumunu güncelle (sadece ilerideki noktaları kontrol et)
+            if (minDistance < ACCEPTANCE_RADIUS_METERS && closestIndex >= nearestPointIndex) {
+                 nearestPointIndex = closestIndex; // Rotadaki en yakın noktayı ilerleme olarak kaydet
             }
 
-
+            let guidanceMessage = `Rotayı takip ediyorsunuz. Rota sonuna yaklaşık ${KML_ROUTE_COORDS.length - 1 - nearestPointIndex} nokta kaldı.`;
+            
             // Rota Son Kontrolü
-            if (nearestPointIndex >= KML_ROUTE_COORDS.length - 1 && minDistance < START_RADIUS_METERS) {
+            if (nearestPointIndex >= KML_ROUTE_COORDS.length - 1 && minDistance < ACCEPTANCE_RADIUS_METERS) {
                 const finishText = 'Rotayı başarıyla tamamladınız! Harika sürüş.';
                 document.getElementById('guidance-text').textContent = finishText;
                 document.getElementById('status-text').textContent = 'TAMAMLANDI';
-                stopTracking();
+                stopTracking(false); // Tamamlanma durumunda durdur, yeniden başlatma butonu çıkmasın
                 speak(finishText);
                 return;
             }
 
-            // Yönlendirme Mesajı
-            let guidanceMessage = `Rotayı takip ediyorsunuz. Rota sonuna yaklaşık ${KML_ROUTE_COORDS.length - 1 - nearestPointIndex} nokta kaldı.`;
-            
-            // 4. Gelişmiş Navigasyon Uyarıları (Yeni)
+            // Rotadan Uzaklaşma Kontrolü (Sadece navigasyon aktifken)
+            if (minDistance > ACCEPTANCE_RADIUS_METERS) {
+                guidanceMessage = `Rotadan ${Math.round(minDistance)} metre uzaktasınız! Lütfen siyah rotaya geri dönün.`;
+                if (currentTime - lastNavigationPromptTime > NAVIGATION_PROMPT_INTERVAL_MS && !speechSynthesis.speaking) {
+                   speak(`Dikkat, rotadan ${Math.round(minDistance)} metre uzaktasınız. Rotaya geri dönün.`);
+                   lastNavigationPromptTime = currentTime;
+                }
+                document.getElementById('guidance-text').textContent = guidanceMessage;
+                return;
+            }
+
+
+            // Gelişmiş Navigasyon Uyarıları ve Hata Kontrolü
             let nextTurn = null;
             let nextTurnDistance = Infinity;
 
-            // Kullanıcının ilerideki ilk dönüş noktası bulma
+            // Kullanıcının ilerideki ilk dönüş noktası bulma (nearestPointIndex'ten sonraki)
             for (const turn of turnMarkers) {
                 if (turn.index > nearestPointIndex) {
                     const dist = haversineDistance(lat, lng, turn.latlng[0], turn.latlng[1]);
@@ -513,32 +493,58 @@
             if (nextTurn) {
                 let warningText = '';
                 const direction = nextTurn.direction === 'Sağ' ? 'sağa' : 'sola';
-
-                if (nextTurnDistance > 450 && nextTurnDistance <= 550) {
-                    warningText = `500 metre sonra ${direction} dönün.`;
-                } else if (nextTurnDistance > 180 && nextTurnDistance <= 220) {
-                    warningText = `200 metre sonra ${direction} dönün.`;
-                } else if (nextTurnDistance > 80 && nextTurnDistance <= 120) {
-                    warningText = `100 metre sonra ${direction} dönün.`;
-                } else if (nextTurnDistance <= 50) {
-                    warningText = `Şimdi ${direction} dönün.`;
+                const currentBearing = heading || 0; // Eğer heading bilgisi yoksa 0 al
+                const turnBearing = calculateBearing(lat, lng, nextTurn.latlng[0], nextTurn.latlng[1]);
+                
+                // Rotadan Sapma (Yanlış Yön) Kontrolü (Sadece 500m yakınlıkta önemli)
+                if (nextTurnDistance < 500) {
+                    const angleDifference = Math.abs(currentBearing - turnBearing);
+                    // 90 dereceden fazla fark varsa (ters yöne gitme veya çok fazla sapma)
+                    if (angleDifference > 120 && angleDifference < 240) { 
+                        if (currentTime - lastNavigationPromptTime > NAVIGATION_PROMPT_INTERVAL_MS && !speechSynthesis.speaking) {
+                           speak("Yanlış yoldasınız! Lütfen rota yönüne dönün.");
+                           lastNavigationPromptTime = currentTime;
+                           document.getElementById('guidance-text').textContent = `YANLIŞ YÖN: İlerideki dönüşe doğru ilerlemiyorsunuz.`;
+                           return; // Diğer uyarıları bastır
+                        }
+                    }
                 }
                 
-                if (warningText && !speechSynthesis.speaking) {
-                    speak(warningText);
-                    guidanceMessage = warningText; // Ekrandaki metni de güncelle
+                // Normal Dönüş Uyarıları (5 saniye bekleme ile)
+                if (currentTime - lastNavigationPromptTime > NAVIGATION_PROMPT_INTERVAL_MS) {
+                    if (nextTurnDistance > 450 && nextTurnDistance <= 550) {
+                        warningText = `500 metre sonra ${direction} dönün.`;
+                    } else if (nextTurnDistance > 180 && nextTurnDistance <= 220) {
+                        warningText = `200 metre sonra ${direction} dönün.`;
+                    } else if (nextTurnDistance > 80 && nextTurnDistance <= 120) {
+                        warningText = `100 metre sonra ${direction} dönün.`;
+                    } else if (nextTurnDistance <= 50) {
+                        warningText = `Şimdi ${direction} dönün.`;
+                    }
+                    
+                    if (warningText) {
+                        speak(warningText);
+                        guidanceMessage = warningText; 
+                        lastNavigationPromptTime = currentTime;
+                    }
                 }
             }
 
-            // Rotadan Uzaklaşma Kontrolü
-            if (minDistance > 50) {
-                guidanceMessage = `Rotadan ${Math.round(minDistance)} metre uzaktasınız. Siyah rotaya geri dönün.`;
-                if (!speechSynthesis.speaking) {
-                   speak(minDistance > 100 ? "Dikkat, rotadan uzaklaştınız!" : "Rotaya dönün.");
-                }
-            } 
-
             document.getElementById('guidance-text').textContent = guidanceMessage;
+        }
+        
+        // İki nokta arasındaki kerteriz (açı) hesaplar (0-360 derece)
+        function calculateBearing(latA, lonA, latB, lonB) {
+            const lat1 = latA * Math.PI / 180;
+            const lat2 = latB * Math.PI / 180;
+            const dLon = (lonB - lonA) * Math.PI / 180;
+            
+            const y = Math.sin(dLon) * Math.cos(lat2);
+            const x = Math.cos(lat1) * Math.sin(lat2) -
+                      Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+            
+            let brng = Math.atan2(y, x) * 180 / Math.PI;
+            return (brng + 360) % 360;
         }
 
         // Geolocation Başlangıç İşlemi
@@ -546,12 +552,11 @@
             if (navigator.geolocation) {
                 document.getElementById('status-text').textContent = 'Konum Alınıyor...';
                 
-                // Konum izleme sadece bir kere başlatılır.
                 if (watchId === null) {
                     watchId = navigator.geolocation.watchPosition(
                         (position) => {
-                            const { latitude, longitude } = position.coords;
-                            guidanceLogic(latitude, longitude);
+                            const { latitude, longitude, heading } = position.coords;
+                            guidanceLogic(latitude, longitude, heading);
                         },
                         (error) => {
                             const errorMessage = error.message || 'Bilinmeyen bir hata oluştu.';
@@ -570,29 +575,27 @@
             }
         }
 
-        function stopTracking() {
+        /**
+         * Rota takibini durdurur.
+         * @param {boolean} allowRestart Durdurulan yerden devam etme moduna geçilsin mi? (Rota tamamlanmadıysa true)
+         */
+        function stopTracking(allowRestart = true) {
             isTracking = false;
-            // Diğer durum güncellemeleri önceki gibi kalır.
-            document.getElementById('start-button').textContent = 'Rotayı Başlat';
-            if (KML_ROUTE_COORDS.length > 0 && userMarker) {
-                const distanceToStart = haversineDistance(
-                    userMarker.getLatLng().lat, 
-                    userMarker.getLatLng().lng, 
-                    KML_ROUTE_COORDS[0][0], 
-                    KML_ROUTE_COORDS[0][1]
-                );
-                 if (distanceToStart <= START_RADIUS_METERS) {
-                     document.getElementById('start-button').disabled = false;
-                     document.getElementById('start-button').classList.remove('bg-blue-600', 'bg-red-600');
-                     document.getElementById('start-button').classList.add('bg-green-600');
-                 } else {
-                     document.getElementById('start-button').disabled = true;
-                     document.getElementById('start-button').classList.remove('bg-green-600', 'bg-red-600');
-                     document.getElementById('start-button').classList.add('bg-blue-600');
-                 }
+            isDrawingTrack = false; // Mavi rota çizimini durdur
+
+            document.getElementById('start-button').textContent = allowRestart ? 'Devam Et' : 'Tamamlandı';
+            
+            if (allowRestart) {
+                // Durdurulan yerden devam etme moduna geç
+                 document.getElementById('start-button').disabled = false;
+                 document.getElementById('start-button').classList.remove('bg-red-600', 'bg-blue-600');
+                 document.getElementById('start-button').classList.add('bg-green-600');
             } else {
                  document.getElementById('start-button').disabled = true;
+                 document.getElementById('start-button').classList.remove('bg-red-600', 'bg-blue-600', 'bg-green-600');
             }
+            
+            // Başlangıç noktası kontrolü artık sadece Devam Et butonunun durumunu günceller.
         }
 
         // Olay dinleyicisi
@@ -604,46 +607,71 @@
 
             if (!isTracking) {
                 if (!userMarker) {
-                    speak("Konumunuz henüz alınmadı. Lütfen bekleyin veya konum iznini kontrol edin.");
-                    return;
-                }
-
-                const distanceToStart = haversineDistance(
-                    userMarker.getLatLng().lat, 
-                    userMarker.getLatLng().lng, 
-                    KML_ROUTE_COORDS[0][0], 
-                    KML_ROUTE_COORDS[0][1]
-                );
-
-                if (distanceToStart > START_RADIUS_METERS) {
-                    speak("Lütfen önce başlangıç noktasına gidin. Navigasyon başlatılmadı.");
+                    speak("Konumunuz henüz alınmadı. Lütfen bekleyin.");
                     return;
                 }
                 
-                // Yeni: Başlangıçta mavi rotayı (sürülen izi) temizle
+                // Rotaya devam etme veya başlatma mantığı
+                
+                // Eğer rota aktif değilse ve butona basıldıysa:
+                // 1. Mavi rota izini SİL (kullanıcının navigasyon dışı geldiği yol silinir)
                 currentRoutePolyline.setLatLngs([]); 
-                if (userMarker) {
-                    currentRoutePolyline.addLatLng(userMarker.getLatLng()); // Marker'ın mevcut konumunu başlangıç noktası olarak ekle
+                
+                // 2. Takip Başlatma durumunda başlangıç noktası index'ini ayarla
+                const userLatlng = userMarker.getLatLng();
+                
+                let minDistance = Infinity;
+                let closestIndex = 0;
+                
+                // En yakın rotayı bul ve o noktadan devam et
+                for (let i = 0; i < KML_ROUTE_COORDS.length; i++) {
+                    const p = KML_ROUTE_COORDS[i];
+                    const distance = haversineDistance(userLatlng.lat, userLatlng.lng, p[0], p[1]);
+                    if (distance < minDistance) {
+                        minDistance = distance;
+                        closestIndex = i;
+                    }
                 }
                 
-                // Takibi Başlat
+                // Eğer kullanıcı rotaya kabul edilebilir mesafedeyse, o noktadan devam et
+                if (minDistance <= ACCEPTANCE_RADIUS_METERS) {
+                    nearestPointIndex = closestIndex;
+                } else {
+                    // Bu senaryoda zaten buton disabled olmalıydı, ama güvenlik için
+                    speak("Rotaya yeterince yakın değilsiniz, lütfen rotaya gidin.");
+                    return;
+                }
+                
+                // Yeni: Mavi rota çizimine BAŞLA
+                isDrawingTrack = true;
+                // Mevcut konumu ilk nokta olarak ekle
+                currentRoutePolyline.addLatLng(userMarker.getLatLng());
+                
+                // Takibi Aktif Et
                 isTracking = true;
-                nearestPointIndex = 0; // Rotanın başından başla
-                lastStartPromptTime = 0; // Başlangıç uyarısını sıfırla
+                lastStartPromptTime = 0;
+                lastNavigationPromptTime = 0;
+
                 document.getElementById('start-button').textContent = 'Takip Aktif (Durdur)';
                 document.getElementById('start-button').disabled = false;
                 document.getElementById('start-button').classList.remove('bg-green-600', 'bg-blue-600');
                 document.getElementById('start-button').classList.add('bg-red-600');
                 document.getElementById('status-text').textContent = 'Rota Takibi Aktif';
-                document.getElementById('guidance-text').textContent = 'Rotayı takip etmeye başlayın.';
-                speak("Rota takibi başlatıldı. Lütfen siyah çizgiyi takip edin.");
+                
+                const startMessage = nearestPointIndex === 0 
+                    ? "Rota takibi başlatıldı. Lütfen siyah çizgiyi takip edin."
+                    : "Rotaya devam ediliyor. Lütfen siyah çizgiyi takip edin.";
+                
+                document.getElementById('guidance-text').textContent = startMessage;
+                speak(startMessage);
+                
             } else {
                 // Takibi Durdur
                 document.getElementById('start-button').classList.remove('bg-red-600');
-                stopTracking();
+                stopTracking(true); // Durdurulan yerden devam etme moduna geç
                 document.getElementById('status-text').textContent = 'Durduruldu';
-                document.getElementById('guidance-text').textContent = 'Navigasyon durduruldu.';
-                speak("Rota takibi durduruldu.");
+                document.getElementById('guidance-text').textContent = 'Navigasyon durduruldu. Devam etmek için tekrar basın.';
+                speak("Rota takibi durduruldu. Devam etmek için butona basınız.");
             }
         });
         
@@ -653,16 +681,16 @@
 
         // Uygulama Başlangıcı
         document.addEventListener('firebaseReady', () => {
-            // Sadece Canvas ortamında değilse, userId'yi 'Yerel Kullanıcı' olarak göster
+            const userIdDisplay = document.getElementById('user-id-display');
             if (typeof window.userId === 'undefined') {
-                document.getElementById('user-id-display').textContent = 'Yerel Kullanıcı';
+                userIdDisplay.textContent = 'Yerel Kullanıcı';
             } else {
-                 document.getElementById('user-id-display').textContent = window.userId;
+                 userIdDisplay.textContent = window.userId;
             }
            
             setupMap();
-            startGeolocation(); // Konum izlemeyi başlat (başlangıç noktasına navigasyon için)
-            document.getElementById('message-container').classList.remove('hidden'); // Simülasyon uyarısını göster
+            startGeolocation(); 
+            document.getElementById('message-container').classList.remove('hidden'); 
         });
 
     </script>
