@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gelişmiş KML Rota Navigasyon Sistemi V6</title>
+    <title>Gelişmiş KML Rota Navigasyon Sistemi V7</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
@@ -23,7 +23,7 @@
             font-size: 0.75rem; 
             font-weight: bold; 
             border-radius: 9999px; /* Full rounded */
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); 
+            box-shadow: 0 0 5px rgba(0,0,0,0.5); 
             min-width: 40px;
             text-align: center;
         }
@@ -121,7 +121,7 @@
         </div>
 
         <div id="message-container" class="mt-4 p-3 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded-lg hidden">
-            <p><strong>UYARI:</strong> Bu uygulama gerçek bir navigasyon uygulaması değil, simülasyondur. Rota takibi sadece tarayıcınızın GPS verileri üzerinden çalışır.</p>
+            <p><strong>UYARI:</strong> Bu uygulama gerçek bir navigasyon uygulaması değil simülasyondur. Rota takibi sadece tarayıcınızın GPS verileri üzerinden çalışır.</p>
         </div>
     </div>
 
@@ -144,6 +144,9 @@
         let isDrawingTrack = false; 
         let startMarker = null; 
         let stopPointMarkers = []; // Duraklama/Segment Sonu İşaretçileri (turuncu)
+
+        // *** DİKKAT: Dönüş eşiği 10'dan 5'e düşürüldü. ***
+        const ANGLE_THRESHOLD = 5; // Daha yumuşak dönüşleri yakalamak için eşik (Derece)
 
         const SEGMENT_BREAK_DISTANCE_METERS = 100; // Segment ayırma eşiği (100 metreden büyük atlamalar)
         const RESUME_RADIUS_METERS = 50; // Başlangıç/Devam için yakınlık eşiği
@@ -353,6 +356,7 @@
                     });
 
                     // Koordinatları basitleştirme (ardışık yakın noktaları atlama)
+                    // Not: Bu kısım, dönüş açısı hesaplamasının daha hassas olması için 2m'den az mesafedeki noktaları atlar.
                     ALL_ROUTE_COORDS = ALL_ROUTE_COORDS.filter((coord, index, self) => {
                         if (index === 0) return true;
                         return haversineDistance(coord[0], coord[1], self[index - 1][0], self[index - 1][1]) > 2;
@@ -473,7 +477,7 @@
              turnMarkers.forEach(m => map.removeLayer(m.marker));
              turnMarkers = [];
              
-             const ANGLE_THRESHOLD = 10; 
+             // ANGLE_THRESHOLD artık global olarak 5 olarak tanımlandı.
              const MIN_DISTANCE_METERS = 10; 
 
              ROUTE_SEGMENTS.forEach(segment => {
